@@ -64,23 +64,17 @@ SERVICE_SCHEMA_COMMAND = SERVICE_SCHEMA.extend(
     }
 )
 
-SERVICE_CUSTOM_TURN_ON = "sensor_turn_on"
-SERVICE_CUSTOM_TURN_OFF = "sensor_turn_off"
-SERVICE_SET_PROPERTIES = "sensor_set_properties"
-SERVICE_COMMAND = "sensor_raw_command"
-
 SERVICE_TO_METHOD = {
-    SERVICE_CUSTOM_TURN_ON: {"method": "async_turn_on"},
-    SERVICE_CUSTOM_TURN_OFF: {"method": "async_turn_off"},
-    SERVICE_SET_PROPERTIES: {
+    "sensor_turn_on": {"method": "async_turn_on"},
+    "sensor_turn_off": {"method": "async_turn_off"},
+    "sensor_set_properties": {
         "method": "async_set_properties",
         "schema": SERVICE_SCHEMA_SET_PROPERTIES,
     },
-    SERVICE_COMMAND: {"method": "async_command", "schema": SERVICE_SCHEMA_COMMAND},
+    "sensor_raw_command": {"method": "async_command", "schema": SERVICE_SCHEMA_COMMAND},
 }
 
 
-# pylint: disable=unused-argument
 async def async_setup_platform(hass, config, async_add_devices, discovery_info=None):
     """Set up the sensor from config."""
     if DATA_KEY not in hass.data:
@@ -95,6 +89,7 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
         miio_device = Device(host, token)
         device_info = miio_device.info()
         model = device_info.model
+
         _LOGGER.info(
             "%s %s %s detected",
             model,
@@ -103,6 +98,7 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
         )
 
         device = XiaomiMiioGenericDevice(miio_device, config, device_info)
+
     except DeviceException:
         raise PlatformNotReady
 
@@ -110,12 +106,13 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
     async_add_devices([device], update_before_add=True)
 
     async def async_service_handler(service):
-        """Map services to methods on XiaomiMiioDevice."""
         method = SERVICE_TO_METHOD.get(service.service)
         params = {
             key: value for key, value in service.data.items() if key != ATTR_ENTITY_ID
         }
+
         entity_ids = service.data.get(ATTR_ENTITY_ID)
+
         if entity_ids:
             devices = [
                 device
@@ -126,6 +123,7 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
             devices = hass.data[DATA_KEY].values()
 
         update_tasks = []
+
         for device in devices:
             if not hasattr(device, method["method"]):
                 continue
@@ -137,16 +135,13 @@ async def async_setup_platform(hass, config, async_add_devices, discovery_info=N
 
     for service in SERVICE_TO_METHOD:
         schema = SERVICE_TO_METHOD[service].get("schema", SERVICE_SCHEMA)
-        hass.services.async_register(
-            DOMAIN, service, async_service_handler, schema=schema
-        )
+        hass.services.async_register(DOMAIN, service, async_service_handler, schema=schema)
 
 
 class XiaomiMiioGenericDevice(Entity):
     """Representation of a Xiaomi Air Quality Monitor."""
 
     def __init__(self, device, config, device_info):
-        """Initialize the entity."""
         self._device = device
 
         self._name = config.get(CONF_NAME)
@@ -156,199 +151,154 @@ class XiaomiMiioGenericDevice(Entity):
         self._properties_getter = config.get(CONF_DEFAULT_PROPERTIES_GETTER)
         self._max_properties = config.get(CONF_MAX_PROPERTIES)
 
-        if (
-            self._properties_getter != CMD_GET_PROPERTIES
-            and self._sensor_property is not None
-            and not self._sensor_property.startswith("unnamed")
-        ):
-            self._properties.append(self._sensor_property)
-
         self._model = device_info.model
+
         self._unique_id = "{}-{}-{}".format(
-            device_info.model, device_info.mac_address, self._sensor_property
+            device_info.model,
+            device_info.mac_address,
+            self._sensor_property
         )
+
         self._icon = "mdi:flask-outline"
 
         self._available = None
         self._state = None
-        properties = self.set_properties(self._properties)
+
         self._state_attrs = {
             ATTR_MODEL: self._model,
             ATTR_FIRMWARE_VERSION: device_info.firmware_version,
             ATTR_HARDWARE_VERSION: device_info.hardware_version,
-            ATTR_PROPERTIES: properties,
+            ATTR_PROPERTIES: self._properties,
             ATTR_SENSOR_PROPERTY: self._sensor_property,
         }
 
-    def set_properties(self, properties):
-        if self._properties_getter != CMD_GET_PROPERTIES:
-            self._properties = list(set(properties))
-            return self._properties
-        else:
-            attrs = {}
-            for p in properties:
-                p = literal_eval(p)
-                attrs[p["siid"], p["piid"]] = p.pop("name", p["did"]), p
-            self._properties = attrs
-            return list(i[0] for i in attrs.values())
-
     @property
     def should_poll(self):
-        """Poll the miio device."""
         return True
 
     @property
     def unique_id(self):
-        """Return an unique ID."""
         return self._unique_id
 
     @property
     def name(self):
-        """Return the name of this entity, if any."""
         return self._name
 
     @property
     def unit_of_measurement(self):
-        """Return the unit of measurement of this entity, if any."""
         return self._unit_of_measurement
 
     @property
     def icon(self):
-        """Return the icon to use for device if any."""
         return self._icon
 
     @property
     def available(self):
-        """Return true when state is known."""
         return self._available
 
     @property
     def state(self):
-        """Return the state of the device."""
         return self._state
 
     @property
     def extra_state_attributes(self):
-        """Return the extra state attributes of the device."""
         return self._state_attrs
 
     async def _try_command(self, mask_error, func, *args, **kwargs):
-        """Call a device command handling error messages."""
         try:
             result = await self.hass.async_add_job(partial(func, *args, **kwargs))
-
-            _LOGGER.info("Response received from miio device: %s", result)
-
-            return result and (
-                result[0] == "ok" or result[0] == "OK" or result[0]["code"] == 0
-            )
+            return result
         except DeviceException as exc:
             _LOGGER.error(mask_error, exc)
-            return False
+            return None
 
     async def async_update(self):
-    """Fetch state from the miio device."""
+        """Fetch state from the miio device."""
 
-    try:
-        # 👇 SPECIAL CASE: Qingping Air Monitor
-        if self._model == "cgllc.airmonitor.b1":
-            result = await self.hass.async_add_job(
-                self._device.send,
-                "get_air_data",
-                []
-            )
+        try:
+            # =========================================================
+            # ✅ CUSTOM DEVICE: Qingping Air Monitor B1
+            # =========================================================
+            if self._model == "cgllc.airmonitor.b1":
+                result = await self.hass.async_add_job(
+                    self._device.send,
+                    "get_air_data",
+                    []
+                )
 
-            _LOGGER.debug("Air data response: %s", result)
+                _LOGGER.debug("Air data response: %s", result)
 
-            # result is already a dict
-            if isinstance(result, list) and len(result) > 0:
-                result = result[0]
+                if isinstance(result, list) and len(result) > 0:
+                    result = result[0]
 
-            if not isinstance(result, dict):
-                raise ValueError("Unexpected response format")
+                if not isinstance(result, dict):
+                    raise ValueError("Unexpected air data format")
 
-            # Primary state (choose PM2.5 as main sensor value)
-            self._state = result.get("pm25")
+                self._state = result.get("pm25")
 
-            # Full attributes
-            self._state_attrs.update({
-                "temperature": result.get("temperature"),
-                "humidity": result.get("humidity"),
-                "pm25": result.get("pm25"),
-                "co2e": result.get("co2e"),
-                "tvoc": result.get("tvoc"),
-            })
+                self._state_attrs.update({
+                    "temperature": result.get("temperature"),
+                    "humidity": result.get("humidity"),
+                    "pm25": result.get("pm25"),
+                    "co2e": result.get("co2e"),
+                    "tvoc": result.get("tvoc"),
+                })
+
+                self._available = True
+                return
+
+            # =========================================================
+            # DEFAULT MIOT BEHAVIOUR (unchanged)
+            # =========================================================
+
+            attrs = self._properties
+            is_new = isinstance(attrs, dict)
+
+            _props = list(i[1] for i in attrs.values()) if is_new else attrs.copy()
+
+            values = []
+            while _props:
+                values.extend(
+                    await self.hass.async_add_job(
+                        self._device.send,
+                        self._properties_getter,
+                        _props[: self._max_properties],
+                    )
+                )
+                _props[:] = _props[self._max_properties :]
+
+            if is_new:
+                state = dict(
+                    (attrs[i["siid"], i["piid"]][0], i.get("value")) for i in values
+                )
+            else:
+                state = dict(zip(attrs, values))
+
+            self._state_attrs.update(state)
+
+            if self._sensor_property is not None:
+                self._state = state.get(self._sensor_property)
 
             self._available = True
-            return
 
-        # ---------------------------------------------------------
-        # DEFAULT BEHAVIOUR (original logic unchanged)
-        # ---------------------------------------------------------
+        except DeviceException as ex:
+            self._available = False
+            _LOGGER.warning("Got exception while fetching state: %s", ex)
 
-        attrs = self._properties
-        is_new = isinstance(attrs, dict)
-
-        _props = list(i[1] for i in attrs.values()) if is_new else attrs.copy()
-
-        values = []
-        while _props:
-            values.extend(
-                await self.hass.async_add_job(
-                    self._device.send,
-                    self._properties_getter,
-                    _props[: self._max_properties],
-                )
-            )
-            _props[:] = _props[self._max_properties :]
-
-        if is_new:
-            state = dict(
-                (attrs[i["siid"], i["piid"]][0], i.get("value")) for i in values
-            )
-        else:
-            state = dict(zip(attrs, values))
-
-        self._state_attrs.update(state)
-
-        if self._sensor_property is not None:
-            self._state = state.get(self._sensor_property)
-
-        self._available = True
-
-    except DeviceException as ex:
-        self._available = False
-        _LOGGER.warning("Got exception while fetching state: %s", ex)
     async def async_turn_on(self, **kwargs):
-        """Turn the miio device on."""
         await self._try_command(
-            "Turning the miio device on failed.", self._device.send, "set_power", ["on"]
+            "Turn on failed", self._device.send, "set_power", ["on"]
         )
 
     async def async_turn_off(self, **kwargs):
-        """Turn the miio device off."""
         await self._try_command(
-            "Turning the miio device off failed.",
-            self._device.send,
-            "set_power",
-            ["off"],
+            "Turn off failed", self._device.send, "set_power", ["off"]
         )
 
     async def async_set_properties(self, properties: list):
-        """Set properties. Will be retrieved on next update."""
-        if (
-            self._properties_getter != CMD_GET_PROPERTIES
-            and self._sensor_property is not None
-            and not self._sensor_property.startswith("unnamed")
-        ):
-            properties.append(self._sensor_property)
-
-        properties = self.set_properties(properties)
         self._state_attrs.update({ATTR_PROPERTIES: properties})
 
     async def async_command(self, method: str, params):
-        """Send a raw command to the device."""
-        _LOGGER.info("Sending command: %s %s" % (method, params))
         await self._try_command(
-            "Turning the miio device on failed.", self._device.send, method, params
+            "Command failed", self._device.send, method, params
         )
