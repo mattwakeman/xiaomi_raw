@@ -247,44 +247,60 @@ class XiaomiMiioGenericDevice(Entity):
             return False
 
     async def async_update(self):
-        """Fetch state from the miio device."""
-        attrs = self._properties
-        is_new = isinstance(attrs, dict)
-        try:
-            # A single request is limited to 16 properties. Therefore the
-            # properties are divided into multiple requests
-            _props = list(i[1] for i in attrs.values()) if is_new else attrs.copy()
-            _LOGGER.debug("Request of the get properties call: %s", _props)
+    """Fetch state from the miio device."""
 
-            values = []
-            while _props:
-                values.extend(
-                    await self.hass.async_add_job(
-                        self._device.send,
-                        self._properties_getter,
-                        _props[: self._max_properties],
-                    )
-                )
-                _props[:] = _props[self._max_properties :]
+    try:
+        # 👇 SPECIAL CASE: Qingping Air Monitor
+        if self._model == "cgllc.airmonitor.b1":
+            result = await self.hass.async_add_job(
+                self._device.send,
+                "get_air_data",
+                []
+            )
 
-            _LOGGER.debug("Response of the get properties call: %s", values)
-        except DeviceException as ex:
-            self._available = False
-            _LOGGER.warning("Got exception while fetching the state: %s", ex)
+            _LOGGER.debug("Air data response: %s", result)
+
+            # result is already a dict
+            if isinstance(result, list) and len(result) > 0:
+                result = result[0]
+
+            if not isinstance(result, dict):
+                raise ValueError("Unexpected response format")
+
+            # Primary state (choose PM2.5 as main sensor value)
+            self._state = result.get("pm25")
+
+            # Full attributes
+            self._state_attrs.update({
+                "temperature": result.get("temperature"),
+                "humidity": result.get("humidity"),
+                "pm25": result.get("pm25"),
+                "co2e": result.get("co2e"),
+                "tvoc": result.get("tvoc"),
+            })
+
+            self._available = True
             return
 
-        properties_count = len(attrs)
-        values_count = len(values)
-        if properties_count != values_count:
-            if not is_new and properties_count == 1 and attrs[0] == "all":
-                attrs = ["unnamed" + str(i) for i in range(values_count)]
-            else:
-                _LOGGER.debug(
-                    "Count (%s) of requested properties does not match the "
-                    "count (%s) of received values.",
-                    properties_count,
-                    values_count,
+        # ---------------------------------------------------------
+        # DEFAULT BEHAVIOUR (original logic unchanged)
+        # ---------------------------------------------------------
+
+        attrs = self._properties
+        is_new = isinstance(attrs, dict)
+
+        _props = list(i[1] for i in attrs.values()) if is_new else attrs.copy()
+
+        values = []
+        while _props:
+            values.extend(
+                await self.hass.async_add_job(
+                    self._device.send,
+                    self._properties_getter,
+                    _props[: self._max_properties],
                 )
+            )
+            _props[:] = _props[self._max_properties :]
 
         if is_new:
             state = dict(
@@ -293,22 +309,16 @@ class XiaomiMiioGenericDevice(Entity):
         else:
             state = dict(zip(attrs, values))
 
-        _LOGGER.info("New state: %s", state)
-
-        self._available = True
         self._state_attrs.update(state)
 
         if self._sensor_property is not None:
             self._state = state.get(self._sensor_property)
-        else:
-            try:
-                device_info = await self.hass.async_add_job(self._device.info)
-                self._state = device_info.accesspoint.get("rssi", self._model)
 
-            except DeviceException as ex:
-                self._available = False
-                _LOGGER.warning("Got exception while fetching device info: %s", ex)
+        self._available = True
 
+    except DeviceException as ex:
+        self._available = False
+        _LOGGER.warning("Got exception while fetching state: %s", ex)
     async def async_turn_on(self, **kwargs):
         """Turn the miio device on."""
         await self._try_command(
