@@ -219,33 +219,46 @@ class XiaomiMiioGenericDevice(Entity):
             # =========================================================
             # ✅ CUSTOM DEVICE: Qingping Air Monitor B1
             # =========================================================
-            if self._model == "cgllc.airmonitor.b1":
-                result = await self.hass.async_add_job(
-                    self._device.send,
-                    "get_air_data",
-                    []
-                )
+         if self._model == "cgllc.airmonitor.b1":
+    raw = await self.hass.async_add_job(
+        self._device.send,
+        "get_air_data",
+        []
+    )
 
-                _LOGGER.debug("Air data response: %s", result)
+    _LOGGER.debug("Raw air data response: %s", raw)
 
-                if isinstance(result, list) and len(result) > 0:
-                    result = result[0]
+    # -------------------------------------------------
+    # Normalize ALL possible miio response formats
+    # -------------------------------------------------
 
-                if not isinstance(result, dict):
-                    raise ValueError("Unexpected air data format")
+    if isinstance(raw, dict) and "result" in raw:
+        raw = raw["result"]
 
-                self._state = result.get("pm25")
+    if isinstance(raw, list) and len(raw) > 0:
+        raw = raw[0]
 
-                self._state_attrs.update({
-                    "temperature": result.get("temperature"),
-                    "humidity": result.get("humidity"),
-                    "pm25": result.get("pm25"),
-                    "co2e": result.get("co2e"),
-                    "tvoc": result.get("tvoc"),
-                })
+    if not isinstance(raw, dict):
+        _LOGGER.error("Unexpected format from get_air_data: %s", raw)
+        self._available = False
+        return
 
-                self._available = True
-                return
+    # -------------------------------------------------
+    # Valid payload
+    # -------------------------------------------------
+
+    self._state = raw.get("pm25")
+
+    self._state_attrs.update({
+        "temperature": raw.get("temperature"),
+        "humidity": raw.get("humidity"),
+        "pm25": raw.get("pm25"),
+        "co2e": raw.get("co2e"),
+        "tvoc": raw.get("tvoc"),
+    })
+
+    self._available = True
+    return
 
             # =========================================================
             # DEFAULT MIOT BEHAVIOUR (unchanged)
